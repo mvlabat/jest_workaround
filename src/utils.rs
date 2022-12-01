@@ -1,3 +1,5 @@
+use indexmap::IndexMap;
+use swc_core::common::Mark;
 use swc_core::{
     common::{Span, Spanned, DUMMY_SP},
     ecma::{
@@ -139,6 +141,147 @@ pub(crate) fn object_define_enumerable_configurable(
         }
         .as_arg(),
     )
+}
+
+pub(crate) fn emit_export_star_stmts(
+    unresolved_mark: Mark,
+    exports: Ident,
+    export_star_items: IndexMap<JsWord, Span>,
+) -> Vec<Stmt> {
+    if export_star_items.is_empty() {
+        return Vec::new();
+    }
+
+    let esm_export_star_ident = private_ident!("_esmExportStar");
+
+    let mut stmts = Vec::new();
+    stmts.push(Stmt::Decl(Decl::Fn(
+        esm_export_star().into_fn_decl(esm_export_star_ident.clone()),
+    )));
+
+    for (path, span) in export_star_items {
+        let require_call = Expr::Call(CallExpr {
+            span: DUMMY_SP,
+            callee: quote_ident!(DUMMY_SP.apply_mark(unresolved_mark), "require").as_callee(),
+            args: vec![Lit::Str(Str {
+                span,
+                raw: None,
+                value: path,
+            })
+            .as_arg()],
+
+            type_args: None,
+        });
+        let esm_export_star_call = esm_export_star_ident.clone().as_call(
+            DUMMY_SP,
+            vec![require_call.into(), exports.clone().as_arg()],
+        );
+        stmts.push(esm_export_star_call.into_stmt());
+    }
+
+    stmts
+}
+
+/// ```javascript
+/// function _esmExportStar(from, to) {
+///     Object.keys(from).forEach(function(k) {
+///         if (k !== "default" && !Object.prototype.hasOwnProperty.call(to, k)) Object.defineProperty(to, k, {
+///             enumerable: true,
+///             get: function get() {
+///                 return from[k];
+///             },
+///             configurable: true
+///         });
+///     });
+/// }
+/// ```
+pub(crate) fn esm_export_star() -> Function {
+    let from = private_ident!("from");
+    let to = private_ident!("to");
+    let k = private_ident!("k");
+
+    let prop: Prop = KeyValueProp {
+        key: prop_name("get", DUMMY_SP).into(),
+        value: Box::new(Expr::Fn(FnExpr {
+            ident: None,
+            function: Box::new(
+                from.clone()
+                    .computed_member(k.clone())
+                    .into_lazy_fn(Vec::new()),
+            ),
+        })),
+    }
+    .into();
+    let k_neq_default: Expr = BinExpr {
+        span: DUMMY_SP,
+        op: BinaryOp::NotEqEq,
+        left: Box::new(k.clone().into()),
+        right: Box::new(quote_str!("default").into()),
+    }
+    .into();
+    let has_own_property: Expr = member_expr!(DUMMY_SP, Object.prototype.hasOwnProperty.call)
+        .as_call(DUMMY_SP, vec![to.clone().as_arg(), k.clone().as_arg()]);
+    let neg_has_own_property: Expr = UnaryExpr {
+        span: DUMMY_SP,
+        op: UnaryOp::Bang,
+        arg: Box::new(has_own_property),
+    }
+    .into();
+    let test: Expr = BinExpr {
+        span: DUMMY_SP,
+        op: BinaryOp::LogicalAnd,
+        left: Box::new(k_neq_default),
+        right: Box::new(neg_has_own_property),
+    }
+    .into();
+    let if_stmt: Stmt = IfStmt {
+        span: DUMMY_SP,
+        test: Box::new(test),
+        cons: Box::new(
+            object_define_enumerable_configurable(
+                to.clone().as_arg(),
+                k.clone().as_arg(),
+                prop.into(),
+            )
+            .into_stmt(),
+        ),
+        alt: None,
+    }
+    .into();
+
+    let callback_fn = Function {
+        params: vec![k.into()],
+        decorators: Vec::new(),
+        span: DUMMY_SP,
+        body: Some(BlockStmt {
+            span: DUMMY_SP,
+            stmts: vec![if_stmt],
+        }),
+        is_generator: false,
+        is_async: false,
+        type_params: None,
+        return_type: None,
+    };
+
+    let object_keys_expr =
+        member_expr!(DUMMY_SP, Object.keys).as_call(DUMMY_SP, vec![from.clone().as_arg()]);
+    let for_each = member_expr!(@EXT, DUMMY_SP, Box::new(object_keys_expr), forEach)
+        .as_call(DUMMY_SP, vec![callback_fn.as_arg()])
+        .into_stmt();
+
+    Function {
+        params: vec![from.into(), to.into()],
+        decorators: Vec::new(),
+        span: DUMMY_SP,
+        body: Some(BlockStmt {
+            span: DUMMY_SP,
+            stmts: vec![for_each],
+        }),
+        is_generator: false,
+        is_async: false,
+        type_params: None,
+        return_type: None,
+    }
 }
 
 pub(crate) fn emit_export_stmts(exports: Ident, mut prop_list: Vec<ObjPropKeyIdent>) -> Vec<Stmt> {

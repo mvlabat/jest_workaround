@@ -4,7 +4,7 @@ use swc_core::{
     ecma::{
         ast::*,
         atoms::{js_word, JsWord},
-        utils::{find_pat_ids, ExprFactory, private_ident},
+        utils::{find_pat_ids, private_ident, ExprFactory},
         visit::{noop_visit_mut_type, VisitMut, VisitMutWith},
     },
 };
@@ -16,6 +16,7 @@ pub(crate) struct LocalExportStrip {
     pub(crate) has_export_assign: bool,
     pub(crate) export: Export,
     pub(crate) export_decl_id: AHashSet<Id>,
+    pub(crate) export_star_items: IndexMap<JsWord, Span>,
     export_default: Option<Stmt>,
 }
 
@@ -69,6 +70,9 @@ impl VisitMut for LocalExportStrip {
                         ModuleDecl::TsExportAssignment(..) => {
                             self.has_export_assign = true;
                             list.push(module_decl.into());
+                        }
+                        ModuleDecl::ExportAll(ExportAll { span, src, .. }) => {
+                            self.export_star_items.insert(src.value.clone(), span);
                         }
                         _ => list.push(module_decl.into()),
                     };
@@ -187,7 +191,7 @@ impl VisitMut for LocalExportStrip {
         }
     }
 
-        /// ```javascript
+    /// ```javascript
     /// export default foo;
     /// export default 1
     /// ```

@@ -1,6 +1,7 @@
 mod local_export_strip;
 mod utils;
 
+use crate::utils::emit_export_star_stmts;
 use local_export_strip::LocalExportStrip;
 use swc_core::{
     common::{collections::AHashSet, util::take::Take, Mark, DUMMY_SP},
@@ -31,6 +32,7 @@ impl VisitMut for TransformVisitor {
             has_export_assign,
             export,
             export_decl_id,
+            export_star_items,
             ..
         } = strip;
 
@@ -49,7 +51,13 @@ impl VisitMut for TransformVisitor {
             let export_obj_prop_list = export.into_iter().map(Into::into).collect();
 
             stmts.extend(
-                emit_export_stmts(exports, export_obj_prop_list)
+                emit_export_stmts(exports.clone(), export_obj_prop_list)
+                    .into_iter()
+                    .map(Into::into),
+            );
+
+            stmts.extend(
+                emit_export_star_stmts(self.unresolved_mark, exports, export_star_items)
                     .into_iter()
                     .map(Into::into),
             );
